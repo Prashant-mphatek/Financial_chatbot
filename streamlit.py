@@ -4,11 +4,11 @@ logging.getLogger("pymilvus").setLevel(logging.CRITICAL)
 import streamlit as st
 import time
 import torch
-import requests
+import os
 from langdetect import detect
-from transformers import AutoTokenizer, AutoModelForSequenceClassification, TextClassificationPipeline, pipeline
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, AutoModelForSequenceClassification, TextClassificationPipeline, pipeline
 from langchain_community.llms import HuggingFacePipeline
-from langchain_community.document_loaders import TextLoader, DirectoryLoader
+from langchain_community.document_loaders import TextLoader, DirectoryLoader, PyPDFLoader, Docx2txtLoader, UnstructuredExcelLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_milvus import Milvus
@@ -16,8 +16,11 @@ from pymilvus import connections, utility
 from langchain_core.prompts import PromptTemplate
 from langchain.chains import ConversationalRetrievalChain
 from langchain.memory import ConversationBufferMemory
-import os
-from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader, UnstructuredExcelLoader
+
+# Debug GPU info
+print("CUDA available:", torch.cuda.is_available())
+if torch.cuda.is_available():
+    print("Using GPU:", torch.cuda.get_device_name(0))
 
 st.set_page_config(page_title="Banking Assistant", layout="centered")
 st.title("\U0001F3E6 Banking Chatbot")
@@ -67,7 +70,14 @@ def load_translation():
 
 @st.cache_resource
 def load_qa_pipeline():
-    return pipeline("text2text-generation", model="google/flan-t5-base", device=0 if torch.cuda.is_available() else -1)
+    model_id = "google/flan-t5-large"
+    tokenizer = AutoTokenizer.from_pretrained(model_id)
+    model = AutoModelForSeq2SeqLM.from_pretrained(
+        model_id,
+        device_map="auto",
+        torch_dtype=torch.float16
+    )
+    return pipeline("text2text-generation", model=model, tokenizer=tokenizer)
 
 @st.cache_resource
 def get_chain():
@@ -77,9 +87,8 @@ def get_chain():
     memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
     prompt = PromptTemplate(
         input_variables=["context", "question"],
-        template="""
-You are an AI assistant for a financial services platform. Use only the context below to answer the question.
-If the answer is not explicitly in the context, respond: \"I'm sorry, the information is not available.\"
+        template="""You are an AI assistant for a financial services platform. Use only the context below to answer the question.
+If the answer is not explicitly in the context, respond: "I'm sorry, the information is not available."
 
 Context:
 {context}
@@ -96,6 +105,7 @@ Answer:
         combine_docs_chain_kwargs={"prompt": prompt}
     )
 
+# File upload section
 st.sidebar.markdown("### \U0001F4C2 Upload Knowledge Files")
 uploaded_files = st.sidebar.file_uploader("Upload .txt, .pdf, .docx, .xlsx files", type=["txt", "pdf", "docx", "xlsx"], accept_multiple_files=True)
 if uploaded_files:
@@ -126,12 +136,14 @@ if uploaded_files:
     )
     st.sidebar.success("✅ Files uploaded and embedded.")
 
+# Chat history
 for user_msg, bot_msg in st.session_state.chat_history:
     with st.chat_message("user", avatar="\U0001F464"):
         st.markdown(user_msg)
     with st.chat_message("assistant", avatar="\U0001F916"):
         st.markdown(bot_msg)
 
+# Query processing
 query = st.chat_input("Ask your banking query here...")
 if query:
     with st.chat_message("user", avatar="\U0001F464"):
@@ -152,7 +164,7 @@ if query:
     try:
         if intent == "data retrieval question" and any(w in query.lower() for w in ["balance", "transaction", "history"]):
             progress.progress(70, text="\U0001F4B3 Retrieving account data...")
-            response = get_balance() if "balance" in query.lower() else get_transactions()
+            response = "Account data feature not implemented in this demo."
             source_docs = []
         else:
             progress.progress(70, text="\U0001F50E Searching knowledge base...")
